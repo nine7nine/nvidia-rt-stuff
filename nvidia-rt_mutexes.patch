@@ -1,0 +1,401 @@
+diff -Naur a/nv.c b/nv.c
+--- a/nv.c	2012-12-04 23:42:53.000000000 +0100
++++ b/nv.c	2012-12-04 20:57:00.000000000 +0100
+@@ -135,8 +135,8 @@
+  */
+ #if defined(NV_VGX_HYPER)
+ struct semaphore nv_linux_devices_lock;
+-#define LOCK_NV_LINUX_DEVICES()     down(&nv_linux_devices_lock)
+-#define UNLOCK_NV_LINUX_DEVICES()   up(&nv_linux_devices_lock)
++#define LOCK_NV_LINUX_DEVICES()     mutex_lock(&nv_linux_devices_lock)
++#define UNLOCK_NV_LINUX_DEVICES()   mutex_unlock(&nv_linux_devices_lock)
+ #else
+ #define LOCK_NV_LINUX_DEVICES()
+ #define UNLOCK_NV_LINUX_DEVICES()
+@@ -1218,7 +1218,7 @@
+ 
+     nv = NV_STATE_PTR(nvl);
+ 
+-    down(&nvl->ldata_lock);
++    mutex_lock(&nvl->ldata_lock);
+ 
+     UNLOCK_NV_LINUX_DEVICES();
+ 
+@@ -1417,7 +1417,7 @@
+         if (nvl->isr_sp != NULL)
+             nv_kmem_cache_free_stack(nvl->isr_sp);
+     }
+-    up(&nvl->ldata_lock);
++    mutex_unlock(&nvl->ldata_lock);
+ failed2:
+     if (rc != 0)
+     {
+@@ -1466,7 +1466,7 @@
+ 
+     rm_free_unused_clients(sp, nv, nvfp);
+ 
+-    down(&nvl->ldata_lock);
++    mutex_lock(&nvl->ldata_lock);
+     if (NV_ATOMIC_DEC_AND_TEST(nvl->usage_count))
+     {
+         if (NV_IS_GVI_DEVICE(nv))
+@@ -1511,7 +1511,7 @@
+         /* leave INIT flag alone so we don't reinit every time */
+         nv->flags &= ~NV_FLAG_OPEN;
+     }
+-    up(&nvl->ldata_lock);
++    mutex_unlock(&nvl->ldata_lock);
+ 
+     for (i = 0; i < NV_FOPS_STACK_INDEX_COUNT; ++i)
+     {
+@@ -1583,7 +1583,7 @@
+     nv_printf(NV_DBG_INFO, "NVRM: ioctl(0x%x, 0x%x, 0x%x)\n",
+         _IOC_NR(cmd), (unsigned int) i_arg, _IOC_SIZE(cmd));
+ 
+-    down(&nvfp->fops_sp_lock[NV_FOPS_STACK_INDEX_IOCTL]);
++    mutex_lock(&nvfp->fops_sp_lock[NV_FOPS_STACK_INDEX_IOCTL]);
+     sp = nvfp->fops_sp[NV_FOPS_STACK_INDEX_IOCTL];
+ 
+     NV_CHECK_PCI_CONFIG_SPACE(sp, nv, TRUE, TRUE, NV_MAY_SLEEP());
+@@ -1737,7 +1737,7 @@
+     }
+ 
+ done:
+-    up(&nvfp->fops_sp_lock[NV_FOPS_STACK_INDEX_IOCTL]);
++    mutex_unlock(&nvfp->fops_sp_lock[NV_FOPS_STACK_INDEX_IOCTL]);
+ 
+     if (arg_copy != NULL)
+     {
+@@ -1849,7 +1849,7 @@
+ 
+     nv_printf(NV_DBG_INFO, "NVRM: nvidia_ctl_open\n");
+ 
+-    down(&nvl->ldata_lock);
++    mutex_lock(&nvl->ldata_lock);
+ 
+     /* save the nv away in file->private_data */
+     nvfp->nvptr = nvl;
+@@ -1869,7 +1869,7 @@
+     }
+ 
+     NV_ATOMIC_INC(nvl->usage_count);
+-    up(&nvl->ldata_lock);
++    mutex_unlock(&nvl->ldata_lock);
+ 
+     return 0;
+ }
+@@ -1894,7 +1894,7 @@
+ 
+     nv_printf(NV_DBG_INFO, "NVRM: nvidia_ctl_close\n");
+ 
+-    down(&nvl->ldata_lock);
++    mutex_lock(&nvl->ldata_lock);
+     if (NV_ATOMIC_DEC_AND_TEST(nvl->usage_count))
+     {
+         nv->flags &= ~NV_FLAG_OPEN;
+@@ -1906,7 +1906,7 @@
+                 "NVRM: failed to unregister from the ACPI subsystem!\n");
+         }
+     }
+-    up(&nvl->ldata_lock);
++    mutex_unlock(&nvl->ldata_lock);
+ 
+     rm_purge_mmap_contexts(sp, nv, file);
+     rm_free_unused_clients(sp, nv, nvfp);
+@@ -2943,7 +2943,7 @@
+     /* Remove proc entry for this GPU */
+     nv_procfs_remove_gpu(nvl);
+ 
+-    down(&nvl->ldata_lock);
++    mutex_lock(&nvl->ldata_lock);
+     UNLOCK_NV_LINUX_DEVICES();
+ 
+ #if !defined(NV_VMWARE)
+diff -Naur a/nv-linux.h b/nv-linux.h
+--- a/nv-linux.h	2013-12-04 23:42:53.000000000 +0100
++++ b/nv-linux.h	2013-12-04 20:57:00.000000000 +0100
+@@ -157,11 +157,6 @@
+ #endif
+ 
+ #include <linux/spinlock.h>
+-#if defined(NV_LINUX_SEMAPHORE_H_PRESENT)
+-#include <linux/semaphore.h>
+-#else
+-#include <asm/semaphore.h>
+-#endif
+ #include <linux/completion.h>
+ #include <linux/highmem.h>
+ 
+@@ -902,19 +897,7 @@
+     return ret;
+ }
+ 
+-#if defined(NV_CONFIG_PREEMPT_RT)
+-#define NV_INIT_MUTEX(mutex) sema_init(mutex,1)
+-#else
+-#if !defined(__SEMAPHORE_INITIALIZER) && defined(__COMPAT_SEMAPHORE_INITIALIZER)
+-#define __SEMAPHORE_INITIALIZER __COMPAT_SEMAPHORE_INITIALIZER
+-#endif
+-#define NV_INIT_MUTEX(mutex)                       \
+-    {                                              \
+-        struct semaphore __mutex =                 \
+-            __SEMAPHORE_INITIALIZER(*(mutex), 1);  \
+-        *(mutex) = __mutex;                        \
+-    }
+-#endif
++#define NV_INIT_MUTEX(mutex) mutex_init(mutex)
+ 
+ #if !defined(NV_VMWARE)
+ #if defined(NV_GET_NUM_PHYSPAGES_PRESENT)
+@@ -1762,7 +1745,7 @@
+     struct timer_list rc_timer;
+ 
+     /* lock for linux-specific data, not used by core rm */
+-    struct semaphore ldata_lock;
++    struct mutex ldata_lock;
+ 
+     /* proc directory information */
+     struct proc_dir_entry *proc_dir;
+@@ -1828,7 +1811,7 @@
+ {
+     nvidia_stack_t *sp;
+     nvidia_stack_t *fops_sp[NV_FOPS_STACK_INDEX_COUNT];
+-    struct semaphore fops_sp_lock[NV_FOPS_STACK_INDEX_COUNT];
++    struct mutex fops_sp_lock[NV_FOPS_STACK_INDEX_COUNT];
+     nv_alloc_t *free_list;
+     void *nvptr;
+     void *proc_data;
+diff -Naur a/nv-mmap.c b/nv-mmap.c
+--- a/nv-mmap.c	2013-12-04 23:42:53.000000000 +0100
++++ b/nv-mmap.c	2013-03-04 20:57:00.000000000 +0100
+@@ -233,7 +233,7 @@
+ 
+     NV_PRINT_VMA(NV_DBG_MEMINFO, vma);
+ 
+-    down(&nvfp->fops_sp_lock[NV_FOPS_STACK_INDEX_MMAP]);
++    mutex_lock(&nvfp->fops_sp_lock[NV_FOPS_STACK_INDEX_MMAP]);
+     sp = nvfp->fops_sp[NV_FOPS_STACK_INDEX_MMAP];
+ 
+     NV_CHECK_PCI_CONFIG_SPACE(sp, nv, TRUE, TRUE, NV_MAY_SLEEP());
+@@ -366,6 +366,6 @@
+         rm_release_api_lock(sp);
+ 
+ done:
+-    up(&nvfp->fops_sp_lock[NV_FOPS_STACK_INDEX_MMAP]);
++    mutex_unlock(&nvfp->fops_sp_lock[NV_FOPS_STACK_INDEX_MMAP]);
+     return status;
+ }
+diff -Naur a/os-interface.c b/os-interface.c
+--- a/os-interface.c	2012-03-19 23:42:53.000000000 +0100
++++ b/os-interface.c	2012-03-20 21:06:25.000000000 +0100
+@@ -26,7 +26,7 @@
+     return RM_OK;
+ }
+ 
+-typedef struct semaphore os_mutex_t;
++typedef struct mutex os_mutex_t;
+ 
+ //
+ // os_alloc_mutex - Allocate the RM mutex
+@@ -87,7 +87,7 @@
+     {
+         return RM_ERR_INVALID_REQUEST;
+     }
+-    down(os_mutex);
++    mutex_lock(os_mutex);
+ 
+     return RM_OK;
+ }
+@@ -118,7 +118,7 @@
+ )
+ {
+     os_mutex_t *os_mutex = (os_mutex_t *)pMutex;
+-    up(os_mutex);
++    mutex_unlock(os_mutex);
+ }
+ 
+ typedef struct os_semaphore_s
+--- a/nv-frontend.c	2013-12-03 23:27:15.289577015 -0500
++++ b/nv-frontend.c	2013-12-03 23:26:58.658576157 -0500
+@@ -31,7 +31,7 @@
+ static NvU32 nv_num_instances;
+ 
+ // lock required to protect table.
+-struct semaphore nv_module_table_lock;
++struct mutex nv_module_table_lock;
+ 
+ // minor number table
+ nvidia_module_t *nv_minor_num_table[NV_FRONTEND_CONTROL_DEVICE_MINOR_MAX + 1];
+@@ -129,7 +129,7 @@
+     int rc = 0;
+     NvU32 ctrl_minor_num;
+ 
+-    down(&nv_module_table_lock);
++    mutex_lock(&nv_module_table_lock);
+     if (module->instance >= NV_MAX_MODULE_INSTANCES)
+     {
+         printk("NVRM: NVIDIA module instance %d registration failed.\n",
+@@ -142,7 +142,7 @@
+     nv_minor_num_table[ctrl_minor_num] = module;
+     nv_num_instances++;
+ done:
+-    up(&nv_module_table_lock);
++    mutex_unlock(&nv_module_table_lock);
+ 
+     return rc;
+ }
+@@ -153,7 +153,7 @@
+     int rc = 0;
+     NvU32 ctrl_minor_num;
+ 
+-    down(&nv_module_table_lock);
++    mutex_lock(&nv_module_table_lock);
+ 
+     ctrl_minor_num = NV_FRONTEND_CONTROL_DEVICE_MINOR_MAX - module->instance;
+     if (nv_minor_num_table[ctrl_minor_num] == NULL)
+@@ -168,7 +168,7 @@
+         nv_num_instances--;
+     }
+ 
+-    up(&nv_module_table_lock);
++    mutex_unlock(&nv_module_table_lock);
+ 
+     return rc;
+ }
+@@ -179,7 +179,7 @@
+     int rc = -1;
+     NvU32 ctrl_minor_num;
+ 
+-    down(&nv_module_table_lock);
++    mutex_lock(&nv_module_table_lock);
+     ctrl_minor_num = NV_FRONTEND_CONTROL_DEVICE_MINOR_MAX - module->instance;
+     if (nv_minor_num_table[ctrl_minor_num] == NULL)
+     {
+@@ -191,7 +191,7 @@
+     {
+         rc = add_device(module, device, NV_FALSE);
+     }
+-    up(&nv_module_table_lock);
++    mutex_unlock(&nv_module_table_lock);
+ 
+     return rc;
+ }
+@@ -202,7 +202,7 @@
+     int rc = 0;
+     NvU32 ctrl_minor_num;
+ 
+-    down(&nv_module_table_lock);
++    mutex_lock(&nv_module_table_lock);
+     ctrl_minor_num = NV_FRONTEND_CONTROL_DEVICE_MINOR_MAX - module->instance;
+     if (nv_minor_num_table[ctrl_minor_num] == NULL)
+     {
+@@ -214,7 +214,7 @@
+     {
+         rc = remove_device(module, device);
+     }
+-    up(&nv_module_table_lock);
++    mutex_unlock(&nv_module_table_lock);
+ 
+     return rc;
+ }
+@@ -230,7 +230,7 @@
+ 
+     NvU32 minor_num = NV_FRONTEND_MINOR_NUMBER(inode);
+ 
+-    down(&nv_module_table_lock);
++    mutex_lock(&nv_module_table_lock);
+     module = nv_minor_num_table[minor_num];
+ 
+     if ((module != NULL) && (module->open != NULL))
+@@ -239,7 +239,7 @@
+         // nvidia-frontend.ko does not get unloaded before the nvidiaN.ko modules.
+         if (NV_BUILD_MODULE_INSTANCES != 0 && !try_module_get(module->owner))
+         {
+-            up(&nv_module_table_lock);
++            mutex_unlock(&nv_module_table_lock);
+             return -ENODEV;
+         }
+         rc = module->open(inode, file);
+@@ -248,7 +248,7 @@
+                     __FUNCTION__, minor_num, rc);
+     }
+ 
+-    up(&nv_module_table_lock);
++    mutex_unlock(&nv_module_table_lock);
+     return rc;
+ }
+ 
+@@ -262,7 +262,7 @@
+ 
+     NvU32 minor_num = NV_FRONTEND_MINOR_NUMBER(inode);
+ 
+-    down(&nv_module_table_lock);
++    mutex_lock(&nv_module_table_lock);
+     module = nv_minor_num_table[minor_num];
+ 
+     if ((module != NULL) && (module->close != NULL))
+@@ -279,7 +279,7 @@
+         }
+     }
+ 
+-    up(&nv_module_table_lock);
++    mutex_unlock(&nv_module_table_lock);
+     return rc;
+ }
+ 
+--- a/nv-procfs.c	2013-10-30 20:15:05.000000000 -0400
++++ b/nv-procfs.c	2013-12-04 11:56:03.067894803 -0500
+@@ -375,7 +375,7 @@
+     char *proc_buffer;
+     unsigned long bytes_left;
+ 
+-    down(&nvfp->fops_sp_lock[NV_FOPS_STACK_INDEX_PROCFS]);
++    mutex_lock(&nvfp->fops_sp_lock[NV_FOPS_STACK_INDEX_PROCFS]);
+ 
+     bytes_left = (NV_PROC_WRITE_BUFFER_SIZE - nvfp->off - 1);
+ 
+@@ -405,7 +405,7 @@
+     *pos = nvfp->off;
+ 
+ done:
+-    up(&nvfp->fops_sp_lock[NV_FOPS_STACK_INDEX_PROCFS]);
++    mutex_unlock(&nvfp->fops_sp_lock[NV_FOPS_STACK_INDEX_PROCFS]);
+ 
+     return ((status < 0) ? status : (int)count);
+ }
+@@ -429,7 +429,7 @@
+     nv_state_t *nv = nvfp->proc_data;
+     nv_linux_state_t *nvl = NV_GET_NVL_FROM_NV_STATE(nv);
+ 
+-    down(&nvl->ldata_lock);
++    mutex_unlock(&nvl->ldata_lock);
+     if (nv->flags & NV_FLAG_UNBIND_LOCK)
+     {
+         seq_printf(s, "1\n");
+@@ -438,7 +438,7 @@
+     {
+         seq_printf(s, "0\n");
+     }
+-    up(&nvl->ldata_lock);
++    mutex_lock(&nvl->ldata_lock);
+ 
+     return 0;
+ }
+@@ -497,7 +497,7 @@
+             goto done;
+         }
+ 
+-        down(&nvl->ldata_lock);
++        mutex_unlock(&nvl->ldata_lock);
+         if ((value == 1) && !(nv->flags & NV_FLAG_UNBIND_LOCK))
+         {
+             rm_unbind_lock(sp, nv);
+@@ -525,7 +525,7 @@
+                       nv->pci_info.domain, nv->pci_info.bus,
+                       nv->pci_info.slot);
+         }
+-        up(&nvl->ldata_lock);
++        mutex_lock(&nvl->ldata_lock);
+     }
+ 
+ done:
