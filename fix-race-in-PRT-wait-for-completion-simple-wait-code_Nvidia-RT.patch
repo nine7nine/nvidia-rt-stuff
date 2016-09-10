@@ -1,7 +1,6 @@
 -NOTE: this patch is a rebase of John Blackwood's patch. On his kernel, he must be using 
 -an older simple wait patch - as his applies to kernel/sched/core.c, while the simple wait
--completion code lives in kernel/sched/completion.c ... I have ported this to test with 
--nvidia, as i would like to see if it fixes the semaphore issues i have seen. 
+-completion code lives in kernel/sched/completion.c ...
 
 -I've kept the original patch comment in tact;
 
